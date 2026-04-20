@@ -54,18 +54,21 @@ module "iam" {
 # ---------------------------------------------------------------
 # CI/CD IAM — GitHub Actions service account + Workload Identity
 # ---------------------------------------------------------------
-# Enables GCR, creates the GitHub Actions SA, and wires up
-# Workload Identity Federation so GitHub can push images and
-# deploy to GKE without any stored credentials (no SA key).
+# Creates the Artifact Registry repo, GitHub Actions SA, and Workload
+# Identity Federation so GitHub can push images and deploy to GKE
+# without any stored credentials (no SA key).
 #
-# After apply, get the GitHub Secrets values with:
+# After apply, get GitHub Secret values with:
 #   terraform output -raw cicd_wif_provider
 #   terraform output -raw cicd_wif_service_account
+#   terraform output -raw cicd_registry_url
 module "cicd_iam" {
   source = "../../modules/cicd_iam"
 
   project_id  = var.project_id
-  github_repo = var.github_repo   # e.g. "tsinghkhamba/gke-sample-app"
+  github_repo = var.github_repo
+  ar_repo_id  = var.ar_repo_id    # name of the Artifact Registry repo
+  ar_location = var.region        # reuse the cluster region for co-location
 }
 
 # ---------------------------------------------------------------
@@ -219,9 +222,9 @@ output "cicd_wif_service_account" {
   value       = module.cicd_iam.wif_service_account
 }
 
-output "cicd_gcr_registry_url" {
-  description = "Base GCR URL — update IMAGE in ci-cd.yml to: <url>/calculator"
-  value       = module.cicd_iam.gcr_registry_url
+output "cicd_registry_url" {
+  description = "Artifact Registry base URL — update IMAGE in ci-cd.yml to: <url>/calculator"
+  value       = module.cicd_iam.registry_url
 }
 
 output "gke_cluster_name" {

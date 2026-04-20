@@ -52,7 +52,7 @@ node_zones   = ["us-central1-a", "us-central1-b", "us-central1-c"]
 master_ipv4_cidr_block = "172.16.0.0/28"
 
 gke_machine_type = "e2-medium"  # 2 vCPU, 4 GB — good for dev workloads
-gke_disk_size_gb = 50
+gke_disk_size_gb = 80
 
 # Regional cluster (3 zones) → actual node count = initial_node_count × 3 = 3 total
 initial_node_count = 1
@@ -71,3 +71,4 @@ node_port = 30080
 # GitHub repo that is allowed to impersonate the CI/CD service account.
 # Replace with your actual GitHub username and repo name.
 github_repo = "TamandeepSingh/gke-sample-app"
+ar_repo_id  = "calculator-repo"

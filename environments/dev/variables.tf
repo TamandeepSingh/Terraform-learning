@@ -162,3 +162,13 @@ variable "github_repo" {
   EOT
   type = string
 }
+
+variable "ar_repo_id" {
+  description = <<-EOT
+    Name of the Artifact Registry Docker repository.
+    Becomes part of the image URL:
+      <region>-docker.pkg.dev/<project_id>/<ar_repo_id>/<image>:<tag>
+  EOT
+  type    = string
+  default = "calculator-repo"
+}

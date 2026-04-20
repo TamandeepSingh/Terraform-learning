@@ -1,65 +1,71 @@
 # ============================================================
 # modules/cicd_iam/main.tf
 # ============================================================
-# This module sets up everything GitHub Actions needs to deploy
-# to GKE and push images to GCR — without storing any long-lived
-# credentials (no SA key files).
+# Sets up everything GitHub Actions needs to push images and deploy
+# to GKE — without any stored credentials (no SA key files).
 #
 # Resources created:
-#   1. GCP APIs enabled (Container Registry, WIF prerequisites)
-#   2. GCR repository (auto-created by the containerregistry API)
+#   1. GCP APIs enabled (Artifact Registry, WIF prerequisites)
+#   2. Artifact Registry Docker repository  ← repo name set via var.ar_repo_id
 #   3. GitHub Actions service account
-#   4. IAM roles on that SA (GCR push, GKE deploy)
-#   5. Workload Identity Pool  — the trust boundary for GitHub
-#   6. Workload Identity Provider — trusts GitHub's OIDC token issuer
-#   7. IAM binding — allows GitHub Actions (specific repo) to impersonate the SA
+#   4. IAM: artifactregistry.writer scoped to the specific repo (not project-wide)
+#   5. IAM: container.developer for GKE deployments
+#   6. Workload Identity Pool  — the trust boundary for external identities
+#   7. Workload Identity Provider — GitHub OIDC issuer config + attribute mapping
+#   8. IAM binding — allows only your GitHub repo to impersonate the SA
+#
+# GCR vs Artifact Registry:
+#
+#   GCR (deprecated, do not use):
+#     - google_container_registry resource is broken (provider bug)
+#     - No named repos — one bucket per project
+#     - Requires roles/storage.admin (project-wide GCS access)
+#     - Image URL: gcr.io/PROJECT/image:tag
+#
+#   Artifact Registry (current):
+#     - google_artifact_registry_repository — explicit named repo
+#     - Repo name set in var.ar_repo_id (e.g. "calculator-repo")
+#     - Requires roles/artifactregistry.writer scoped to that repo only
+#     - Image URL: REGION-docker.pkg.dev/PROJECT/REPO_ID/image:tag
+#     - Supports cleanup policies, multi-format, per-repo IAM
 #
 # How Workload Identity Federation works:
 #
 #   GitHub Actions runner
-#     │
-#     │  1. Requests a short-lived OIDC token from GitHub
-#     │     (contains claims: repository, actor, branch, sha, etc.)
-#     │
+#     │  1. Requests a signed OIDC token from GitHub
+#     │     Claims: repository, actor, ref, sha, workflow, ...
 #     ▼
 #   GCP Security Token Service (STS)
-#     │  2. Verifies the token is signed by GitHub's OIDC issuer
-#     │  3. Checks attribute_condition (must be YOUR repo)
+#     │  2. Verifies JWT signature against GitHub's public JWKS
+#     │  3. Evaluates attribute_condition — must be YOUR repo exactly
 #     │  4. Returns a federated identity token
-#     │
 #     ▼
-#   GCP IAM  5. Exchanges federated token for a short-lived
-#               service account access token (token impersonation)
-#     │
+#   GCP IAM
+#     │  5. Exchanges federated token → short-lived SA access token
 #     ▼
-#   GitHub Actions runner now has a valid GCP access token
-#   scoped to the cicd service account — no JSON key involved.
+#   Token expires when the job ends. No key. Nothing to rotate.
 
 # ---------------------------------------------------------------
 # Enable required GCP APIs
 # ---------------------------------------------------------------
-# Terraform can enable APIs for you. Without these, resource creation fails.
-# disable_on_destroy = false means Terraform won't disable the API when
-# you run `terraform destroy` — other resources may still need it.
 
-# Container Registry API — allows pushing and pulling Docker images via gcr.io.
-# GCR stores images in a GCS bucket that GCP manages automatically.
-resource "google_project_service" "container_registry" {
+# Artifact Registry API — must be enabled before creating any repository.
+resource "google_project_service" "artifact_registry" {
   project            = var.project_id
-  service            = "containerregistry.googleapis.com"
+  service            = "artifactregistry.googleapis.com"
   disable_on_destroy = false
 }
 
-# IAM Credentials API — required for service account token impersonation.
-# WIF uses this to exchange a federated identity token for an SA access token.
+# IAM Credentials API — used by WIF to exchange a federated token
+# for a short-lived service account access token.
 resource "google_project_service" "iam_credentials" {
   project            = var.project_id
   service            = "iamcredentials.googleapis.com"
   disable_on_destroy = false
 }
 
-# Security Token Service API — required for WIF token exchange.
-# GCP STS is the endpoint that accepts GitHub's OIDC token.
+# Security Token Service API — the GCP endpoint GitHub's OIDC token
+# is sent to in exchange for a federated identity token.
 resource "google_project_service" "sts" {
   project            = var.project_id
   service            = "sts.googleapis.com"
@@ -67,56 +73,62 @@ resource "google_project_service" "sts" {
 }
 
 # ---------------------------------------------------------------
-# GCR repository
+# Artifact Registry — Docker repository
 # ---------------------------------------------------------------
-# google_container_registry ensures the GCR registry is initialised
-# for this project and optionally pins it to a GCS multi-region location.
+# This is where you name your container image repository.
+# The name is set via var.ar_repo_id (e.g. "calculator-repo").
 #
-# GCR doesn't have a concept of "named repos" like Artifact Registry does.
-# The repo is automatically created when you first push an image.
-# The image path format is: gcr.io/<project-id>/<image-name>:<tag>
+# Image URL format:
+#   <ar_location>-docker.pkg.dev/<project_id>/<ar_repo_id>/<image>:<tag>
 #
-# Note: Google is migrating GCR to Artifact Registry. For new projects
-# consider using google_artifact_registry_repository instead, which
-# supports more features (cleanup policies, format-specific settings).
-resource "google_container_registry" "registry" {
-  project  = var.project_id
-  location = var.gcr_location   # US, EU, or ASIA (maps to us., eu., asia. prefixes)
+# Example with defaults:
+#   us-central1-docker.pkg.dev/my-project/calculator-repo/calculator:sha-a1b2c3
+#
+# Why region matters: images are stored in the chosen GCP region.
+# Use the same region as your GKE cluster for the fastest pulls.
+resource "google_artifact_registry_repository" "app" {
+  project       = var.project_id
+  location      = var.ar_location    # should match your GKE cluster region
+  repository_id = var.ar_repo_id     # ← THE REPO NAME — set in tfvars
+  description   = "Docker images built and pushed by GitHub Actions CI/CD."
+  format        = "DOCKER"
 
-  depends_on = [google_project_service.container_registry]
+  depends_on = [google_project_service.artifact_registry]
 }
 
 # ---------------------------------------------------------------
 # GitHub Actions service account
 # ---------------------------------------------------------------
-# A dedicated SA for CI/CD with only the permissions it needs.
-# Principle of least privilege: this SA cannot modify IAM, create VMs, etc.
+# Minimal SA — only the permissions the CI/CD pipeline actually needs.
 resource "google_service_account" "cicd" {
   project      = var.project_id
   account_id   = var.sa_id
   display_name = "GitHub Actions CI/CD"
-  description  = "Impersonated by GitHub Actions via WIF to push images to GCR and deploy to GKE."
+  description  = "Impersonated via WIF to push images to Artifact Registry and deploy to GKE."
 }
 
 # ---------------------------------------------------------------
-# IAM roles for the CI/CD service account
+# IAM: Artifact Registry writer — scoped to the specific repo
 # ---------------------------------------------------------------
-
-# roles/storage.admin — GCR images are stored in a GCS bucket
-# (named artifacts.<project-id>.appspot.com). This SA needs storage
-# write access to push images to that bucket.
-# storage.admin is broader than needed but is the conventional role for GCR.
-# For tighter scoping, use storage.objectAdmin on the specific GCR bucket.
-resource "google_project_iam_member" "cicd_storage_admin" {
-  project = var.project_id
-  role    = "roles/storage.admin"
-  member  = "serviceAccount:${google_service_account.cicd.email}"
+# roles/artifactregistry.writer on the repository resource (not project):
+#   - docker push  — upload new images and tags
+#   - docker pull  — download images (needed during multi-stage builds)
+#   - list tags
+#
+# Scoping to the repository means this SA cannot touch any other
+# AR repo, GCS bucket, or service in the project.
+resource "google_artifact_registry_repository_iam_member" "cicd_writer" {
+  project    = var.project_id
+  location   = google_artifact_registry_repository.app.location
+  repository = google_artifact_registry_repository.app.name
+  role       = "roles/artifactregistry.writer"
+  member     = "serviceAccount:${google_service_account.cicd.email}"
 }
 
-# roles/container.developer — allows:
-#   - kubectl apply (create/update Deployments, Services, etc.)
-#   - kubectl set image (trigger rolling updates)
-#   - kubectl rollout status (wait for rollout)
+# ---------------------------------------------------------------
+# IAM: GKE developer — project-level
+# ---------------------------------------------------------------
+# roles/container.developer allows kubectl apply, set image, rollout.
 # Does NOT allow creating or deleting GKE clusters.
 resource "google_project_iam_member" "cicd_gke_developer" {
   project = var.project_id
@@ -127,15 +139,14 @@ resource "google_project_iam_member" "cicd_gke_developer" {
 # ---------------------------------------------------------------
 # Workload Identity Pool
 # ---------------------------------------------------------------
-# A pool is a container for external identity providers.
-# Think of it as a trust boundary: "identities from these providers
-# are allowed to access GCP resources."
-# One pool per environment (or one shared pool) is typical.
+# A named trust boundary for external identity providers.
+# Any provider added to this pool can potentially authenticate to GCP.
+# The actual access is controlled by IAM bindings on specific resources.
 resource "google_iam_workload_identity_pool" "github" {
   project                   = var.project_id
   workload_identity_pool_id = "github-pool"
   display_name              = "GitHub Actions Pool"
-  description               = "Trusts GitHub's OIDC token issuer for CI/CD authentication."
+  description               = "Trusts GitHub's OIDC token issuer for keyless CI/CD auth."
 
   depends_on = [google_project_service.sts]
 }
@@ -143,43 +154,36 @@ resource "google_iam_workload_identity_pool" "github" {
 # ---------------------------------------------------------------
 # Workload Identity Provider (GitHub OIDC)
 # ---------------------------------------------------------------
-# A provider defines HOW external tokens are validated and HOW
-# claims in the token map to GCP attributes.
+# Configures how GitHub's JWT tokens are validated and translated
+# into GCP identity attributes.
 #
-# GitHub's OIDC token contains these claims (among others):
-#   sub         = "repo:<owner>/<repo>:ref:refs/heads/main"
-#   repository  = "<owner>/<repo>"
-#   actor       = "<github-username>"
-#   workflow    = "<workflow-name>"
-#
-# attribute_mapping translates GitHub claims → GCP attributes.
-# GCP attributes can then be used in attribute_condition to restrict access.
+# GitHub OIDC token claims:
+#   sub        = "repo:<owner>/<repo>:ref:refs/heads/main"
+#   repository = "<owner>/<repo>"     e.g. "tsinghkhamba/gke-sample-app"
+#   actor      = GitHub username
+#   ref        = git ref              e.g. "refs/heads/main"
+#   sha        = commit SHA
 resource "google_iam_workload_identity_pool_provider" "github" {
   project                            = var.project_id
   workload_identity_pool_id          = google_iam_workload_identity_pool.github.workload_identity_pool_id
   workload_identity_pool_provider_id = "github-provider"
   display_name                       = "GitHub OIDC"
-  description                        = "Validates OIDC tokens issued by GitHub Actions."
+  description                        = "Validates GitHub Actions OIDC tokens. Restricted to: ${var.github_repo}"
 
-  # Map GitHub JWT claims to GCP attributes.
-  # Left side  = GCP attribute name (used in conditions and IAM bindings)
-  # Right side = expression evaluated against the JWT token (CEL syntax)
+  # Translate GitHub JWT claims → GCP attributes used in IAM conditions.
   attribute_mapping = {
-    "google.subject"       = "assertion.sub"         # unique identity string per workflow run
-    "attribute.actor"      = "assertion.actor"       # GitHub username that triggered the run
-    "attribute.repository" = "assertion.repository"  # e.g. "tsinghkhamba/gke-sample-app"
-    "attribute.ref"        = "assertion.ref"         # e.g. "refs/heads/main"
+    "google.subject"       = "assertion.sub"
+    "attribute.actor"      = "assertion.actor"
+    "attribute.repository" = "assertion.repository"
+    "attribute.ref"        = "assertion.ref"
   }
 
-  # attribute_condition is a CEL expression that MUST be true for the
-  # token to be accepted. This restricts authentication to a specific repo,
-  # preventing any fork or unrelated repo from impersonating this SA.
-  # Format: "owner/repo-name"
+  # MUST be true for the token to be accepted.
+  # Rejects any token that isn't from your specific repo —
+  # forks, other repos, and unrelated workflows are all denied here.
   attribute_condition = "assertion.repository == '${var.github_repo}'"
 
   oidc {
-    # GitHub's OIDC discovery URL. GCP fetches the public keys from here
-    # to verify the JWT signature on every authentication attempt.
     issuer_uri = "https://token.actions.githubusercontent.com"
   }
 }
@@ -187,14 +191,10 @@ resource "google_iam_workload_identity_pool_provider" "github" {
 # ---------------------------------------------------------------
 # Allow GitHub Actions to impersonate the CI/CD SA
 # ---------------------------------------------------------------
-# This IAM binding on the SA grants the "workloadIdentityUser" role
-# to any identity from the WIF pool whose attribute.repository matches
-# the github_repo variable.
-#
-# principalSet:// selects a GROUP of identities sharing an attribute.
-# (As opposed to principal:// which selects a single identity by subject.)
-# Using principalSet with attribute.repository means: "any token from
-# the github-pool where repository == var.github_repo".
+# principalSet:// selects all identities in the pool where
+# attribute.repository matches var.github_repo.
+# This is the final gate: the token passed the provider's
+# attribute_condition, and now IAM grants it SA impersonation.
 resource "google_service_account_iam_member" "github_wif_binding" {
   service_account_id = google_service_account.cicd.name
   role               = "roles/iam.workloadIdentityUser"

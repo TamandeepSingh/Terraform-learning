@@ -93,6 +93,18 @@ resource "google_container_cluster" "primary" {
   remove_default_node_pool = true
   initial_node_count       = 1
 
+  # node_config here applies ONLY to the temporary bootstrap node GKE
+  # creates in the default pool before deleting it.
+  # Without this block GKE defaults to pd-balanced (SSD), which counts
+  # against the SSD_TOTAL_GB quota (250 GB default) and can cause quota
+  # errors before the node is even deleted.
+  # pd-standard uses HDD quota (2 TB default) — safe for a throwaway node.
+  # disk_size_gb = 10 is the minimum GKE allows.
+  node_config {
+    disk_type    = "pd-standard"
+    disk_size_gb = 20
+  }
+
   # -------------------------------------------------------
   # Workload Identity
   # -------------------------------------------------------
@@ -121,11 +133,16 @@ resource "google_container_cluster" "primary" {
   # -------------------------------------------------------
   # GKE auto-upgrades control planes and nodes (security patches, new k8s versions).
   # This window tells GKE *when* it is allowed to perform maintenance.
-  # Saturday and Sunday at 03:00–07:00 UTC keeps disruption away from weekday hours.
+  # Saturday and Sunday 03:00–11:00 UTC (8h each day).
+  #
+  # Why 8h instead of 4h?
+  # GKE requires >= 48h of maintenance availability in any 32-day window.
+  # 4h × 2 days × 4 weekends = 32h → rejected (< 48h).
+  # 8h × 2 days × 4 weekends = 64h → accepted (>= 48h).
   maintenance_policy {
     recurring_window {
       start_time = "2024-01-01T03:00:00Z"
-      end_time   = "2024-01-01T07:00:00Z"
+      end_time   = "2024-01-01T11:00:00Z"
       recurrence = "FREQ=WEEKLY;BYDAY=SA,SU"
     }
   }
@@ -189,7 +206,15 @@ resource "google_container_node_pool" "primary_nodes" {
       "https://www.googleapis.com/auth/cloud-platform",
     ]
 
-    disk_type    = "pd-balanced"
+    # pd-standard uses HDD — fine for dev/learning where disk I/O is not critical.
+    # Disk type comparison:
+    #   pd-standard  → HDD, quota: DISKS_TOTAL_GB (default 2 TB)  ← dev choice
+    #   pd-balanced  → SSD, quota: SSD_TOTAL_GB   (default 250 GB) ← easily exhausted
+    #   pd-ssd       → SSD, quota: SSD_TOTAL_GB   (default 250 GB)
+    # Switch to pd-balanced or pd-ssd in production when throughput matters.
+    # Regional cluster: 3 zones × initial_node_count nodes × disk_size_gb
+    # must stay within the chosen quota (e.g. 3 × 1 × 50 GB = 150 GB SSD).
+    disk_type    = "pd-standard"
     disk_size_gb = var.disk_size_gb
 
     # GKE_METADATA mode activates Workload Identity on the node.

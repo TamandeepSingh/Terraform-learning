@@ -1,40 +1,39 @@
 # ============================================================
 # modules/cicd_iam/outputs.tf
 # ============================================================
-# These outputs are the values you copy into GitHub Secrets.
-# After `terraform apply`, run:
-#   terraform output -raw wif_provider
-#   terraform output -raw wif_service_account
-# and paste each value into the corresponding GitHub Secret.
+# After `terraform apply`, get GitHub Secret values with:
+#   terraform output -raw cicd_wif_provider
+#   terraform output -raw cicd_wif_service_account
+#
+# Get the image base URL for ci-cd.yml with:
+#   terraform output -raw cicd_registry_url
 
 output "wif_provider" {
-  description = <<-EOT
-    Full resource name of the Workload Identity Provider.
-    Copy this value into the GitHub Secret: WIF_PROVIDER
-    Used by google-github-actions/auth in the CI/CD workflow.
-  EOT
-  value = google_iam_workload_identity_pool_provider.github.name
+  description = "Paste into GitHub Secret: WIF_PROVIDER"
+  value       = google_iam_workload_identity_pool_provider.github.name
 }
 
 output "wif_service_account" {
-  description = <<-EOT
-    Email of the GitHub Actions service account to impersonate.
-    Copy this value into the GitHub Secret: WIF_SERVICE_ACCOUNT
-    Used by google-github-actions/auth in the CI/CD workflow.
-  EOT
-  value = google_service_account.cicd.email
+  description = "Paste into GitHub Secret: WIF_SERVICE_ACCOUNT"
+  value       = google_service_account.cicd.email
 }
 
-output "gcr_registry_url" {
+output "registry_url" {
   description = <<-EOT
-    Base URL for pushing images to GCR.
-    Full image path: <gcr_registry_url>/<image-name>:<tag>
-    Update the IMAGE env var in .github/workflows/ci-cd.yml with this.
+    Base URL for pushing images to Artifact Registry.
+    Full image path: <registry_url>/<image-name>:<tag>
+    Update IMAGE in .github/workflows/ci-cd.yml to: <registry_url>/calculator
+    Also update gcloud auth configure-docker to use this hostname.
   EOT
-  value = "gcr.io/${var.project_id}"
+  value = "${var.ar_location}-docker.pkg.dev/${var.project_id}/${var.ar_repo_id}"
+}
+
+output "ar_hostname" {
+  description = "Artifact Registry hostname — pass to 'gcloud auth configure-docker' in CI/CD."
+  value       = "${var.ar_location}-docker.pkg.dev"
 }
 
 output "cicd_sa_name" {
-  description = "Full resource name of the CI/CD service account (for IAM references)."
+  description = "Full resource name of the CI/CD service account."
   value       = google_service_account.cicd.name
 }
