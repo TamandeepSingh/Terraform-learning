@@ -70,4 +70,4 @@ node_port = 30080
 # ---------------------------------------------------------------
 # GitHub repo that is allowed to impersonate the CI/CD service account.
 # Replace with your actual GitHub username and repo name.
-github_repo = "your-github-username/gke-sample-app"
+github_repo = "TamandeepSingh/gke-sample-app"
