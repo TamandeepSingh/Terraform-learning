@@ -1,37 +1,102 @@
-# Local .terraform directories
+# ============================================================
+# Terraform-learning .gitignore
+# ============================================================
+
+# ---------------------------------------------------------------
+# Terraform core
+# ---------------------------------------------------------------
+
+# .terraform/ contains the downloaded provider plugins and modules.
+# It is large (hundreds of MB), machine-specific, and fully reproducible
+# by running `terraform init`. Never commit it.
 .terraform/
 
-# .tfstate files
+# State files contain the real-world resource mappings Terraform manages.
+# Local state is dangerous to commit — it can contain plaintext secrets
+# and causes conflicts when multiple people run Terraform.
+# Use a remote backend (GCS) instead, as configured in backend.tf.
 *.tfstate
 *.tfstate.*
 
-# Crash log files
+# Crash logs written when Terraform panics. Never useful to commit.
 crash.log
 crash.*.log
 
-# Exclude all .tfvars files, which are likely to contain sensitive data, such as
-# password, private keys, and other secrets. These should not be part of version 
-# control as they are data points which are potentially sensitive and subject 
-# to change depending on the environment.
-*.tfvars
-*.tfvars.json
+# Terraform plan output files. Plans are point-in-time snapshots —
+# committing them is misleading because they go stale immediately.
+*.tfplan
+tfplan
 
-# Ignore override files as they are usually used to override resources locally and so
-# are not checked in
+# Lock file for the Terraform working directory state (not the provider lock).
+.terraform.tfstate.lock.info
+
+# ---------------------------------------------------------------
+# Variable files
+# ---------------------------------------------------------------
+
+# *.auto.tfvars files are loaded automatically by Terraform and are
+# commonly used for local overrides or sensitive values. Ignore them.
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Explicitly named secret/local override files — never commit these.
+secrets.tfvars
+*.secret.tfvars
+local.tfvars
+
+# terraform.tfvars IS tracked in this repo.
+# It contains environment config (project ID, region, etc.) but no secrets —
+# this project uses Workload Identity Federation, so no SA keys are stored.
+# If you add sensitive values to terraform.tfvars, move them to secrets.tfvars
+# (which is gitignored above) and reference them with -var-file=secrets.tfvars.
+!terraform.tfvars
+!terraform.tfvars.json
+
+# ---------------------------------------------------------------
+# Terraform override files
+# ---------------------------------------------------------------
+# Override files let you locally change resource config without editing
+# the main files. They are machine-specific and should not be shared.
 override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
 
-# Ignore transient lock info files created by terraform apply
-.terraform.tfstate.lock.info
-
-# Include override files you do wish to add to version control using negated pattern
-# !example_override.tf
-
-# Include tfplan files to ignore the plan output of command: terraform plan -out=tfplan
-# example: *tfplan*
-
-# Ignore CLI configuration files
+# ---------------------------------------------------------------
+# Terraform CLI config
+# ---------------------------------------------------------------
 .terraformrc
 terraform.rc
+
+# ---------------------------------------------------------------
+# Generated docs / diagrams
+# ---------------------------------------------------------------
+# terraform-docs output if generated locally
+# (uncomment if you auto-generate docs and don't want to commit them)
+# docs/
+
+# ---------------------------------------------------------------
+# IDE and editor
+# ---------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------
+# OS
+# ---------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------
+# Credentials (belt-and-suspenders safety net)
+# ---------------------------------------------------------------
+# These should never appear in a Terraform repo, but catch them
+# in case someone accidentally creates them locally.
+*.json.key
+key.json
+*-key.json
+service-account*.json
+credentials.json
